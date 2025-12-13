@@ -4,7 +4,6 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import time
-import json
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -15,34 +14,36 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from datetime import datetime
+from supabase import create_client, Client
 
 load_dotenv()
 
-# History file
-HISTORY_FILE = "course_history.json"
+# Supabase configuration
+SUPABASE_URL = "https://dsfovnqwksxlsusrcfil.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzZm92bnF3a3N4bHN1c3JjZmlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1Njk4NDQsImV4cCI6MjA4MTE0NTg0NH0.yJ5FwDyjxvweCl9yYaU_jtsEwO9v3NVgrdyhdgQ_YD8"
 
-def load_history():
-    """Load existing course check history"""
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def save_check_result(course_number, result):
-    """Save check result to history"""
-    history = load_history()
-    
-    if course_number not in history:
-        history[course_number] = []
-    
-    history[course_number].append(result)
-    
-    # Keep only last 50 checks per course
-    if len(history[course_number]) > 50:
-        history[course_number] = history[course_number][-50:]
-    
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump(history, f, indent=2)
+def save_to_supabase(course_number, result):
+    """Save check result to Supabase"""
+    try:
+        data = {
+            "course_number": course_number,
+            "timestamp": result["timestamp"],
+            "professor": result["professor"],
+            "class_time": result["class_time"],
+            "available_seats": result["available_seats"],
+            "seats_text": result["seats_text"],
+            "has_seats": result["has_seats"]
+        }
+        
+        response = supabase.table("course_checker").insert(data).execute()
+        print(f"✅ Saved to database: {course_number}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to save to database: {e}")
+        return False
 
 def send_email(subject, body, to_email):
     try:
@@ -113,9 +114,9 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
                     available_seats_match = re.search(r'(\d+)', available_seats_text)
                     available_seats = int(available_seats_match.group(1)) if available_seats_match else 0
 
-                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.now().isoformat()
 
-                    # Save to history
+                    # Save to Supabase
                     result = {
                         "timestamp": current_time,
                         "professor": professor,
@@ -124,7 +125,7 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
                         "seats_text": available_seats_text,
                         "has_seats": available_seats > 0
                     }
-                    save_check_result(course_number_to_search, result)
+                    save_to_supabase(course_number_to_search, result)
 
                     print(f"📚 Course Number: {course_number}")
                     print(f"👨‍🏫 Professor: {professor}")
@@ -137,16 +138,15 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
 
             print(f"❌ Course {course_number_to_search} not found")
             
-            # Save "not found" result
             result = {
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": datetime.now().isoformat(),
                 "professor": "N/A",
                 "class_time": "N/A",
                 "available_seats": 0,
                 "seats_text": "Course not found",
                 "has_seats": False
             }
-            save_check_result(course_number_to_search, result)
+            save_to_supabase(course_number_to_search, result)
             
             return False
 
@@ -158,17 +158,15 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
             else:
                 print(f"❌ All retry attempts failed for course {course_number_to_search}")
                 
-                # Save error result
                 result = {
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "timestamp": datetime.now().isoformat(),
                     "professor": "N/A",
                     "class_time": "N/A",
                     "available_seats": 0,
                     "seats_text": "Check failed",
-                    "has_seats": False,
-                    "error": str(e)
+                    "has_seats": False
                 }
-                save_check_result(course_number_to_search, result)
+                save_to_supabase(course_number_to_search, result)
                 
                 return False
         finally:
@@ -216,7 +214,7 @@ if __name__ == "__main__":
     
     print("🚀 Starting ASU Course Availability Checker...")
     print("📊 Monitoring courses every 2 minutes")
-    print("📝 Saving results to course_history.json")
+    print("☁️  Saving results to Supabase cloud database")
     print("Press Ctrl+C to stop\n")
     
     consecutive_errors = 0

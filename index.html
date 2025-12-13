@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ASU Course Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         * {
             margin: 0;
@@ -70,6 +71,11 @@
         .status.success {
             background: #d4edda;
             color: #155724;
+        }
+
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
         }
 
         .courses-grid {
@@ -231,7 +237,7 @@
     <div class="container">
         <div class="header">
             <h1>🎓 ASU Course Monitor</h1>
-            <p>Real-time tracking with full history</p>
+            <p>Real-time tracking with full history - Access from anywhere!</p>
         </div>
 
         <div class="controls">
@@ -240,7 +246,7 @@
                 <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
                 <label for="autoRefresh">Auto-refresh every 30 seconds</label>
             </div>
-            <div id="status" class="status success" style="margin-top: 15px;">
+            <div id="status" class="status success">
                 Click refresh to load latest data
             </div>
         </div>
@@ -251,6 +257,11 @@
     </div>
 
     <script>
+        const SUPABASE_URL = 'https://dsfovnqwksxlsusrcfil.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzZm92bnF3a3N4bHN1c3JjZmlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1Njk4NDQsImV4cCI6MjA4MTE0NTg0NH0.yJ5FwDyjxvweCl9yYaU_jtsEwO9v3NVgrdyhdgQ_YD8';
+        
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
         const courses = {
             "17645": {course: "MAT 343", professor: "Stefania Tracogna"},
             "22317": {course: "MAT 343", professor: "Stefania Tracogna"},
@@ -284,27 +295,48 @@
             }
         }
 
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
         async function loadData() {
             const statusDiv = document.getElementById('status');
-            statusDiv.innerHTML = '🔄 Loading data...';
+            statusDiv.className = 'status loading';
+            statusDiv.innerHTML = '🔄 Loading data from cloud...';
 
             try {
-                const response = await fetch('course_history.json?' + new Date().getTime());
-                const history = await response.json();
-                
-                displayCourses(history);
+                // Get all course checks, ordered by timestamp
+                const { data, error } = await supabase
+                    .from('course_checker')
+                    .select('*')
+                    .order('timestamp', { ascending: false });
+
+                if (error) throw error;
+
+                // Group by course number
+                const groupedData = {};
+                data.forEach(check => {
+                    if (!groupedData[check.course_number]) {
+                        groupedData[check.course_number] = [];
+                    }
+                    groupedData[check.course_number].push(check);
+                });
+
+                displayCourses(groupedData);
                 
                 statusDiv.className = 'status success';
-                statusDiv.innerHTML = '✅ Data loaded successfully!';
+                statusDiv.innerHTML = `✅ Loaded ${data.length} checks from database!`;
                 
                 document.getElementById('lastUpdated').innerHTML = 
                     `Last updated: ${new Date().toLocaleString()}`;
                     
             } catch (error) {
+                console.error('Error loading data:', error);
                 statusDiv.className = 'status';
-                statusDiv.style.background = '#fff3cd';
-                statusDiv.style.color = '#856404';
-                statusDiv.innerHTML = '⚠️ No data found. Run the Python script first: <code>python getit.py</code>';
+                statusDiv.style.background = '#f8d7da';
+                statusDiv.style.color = '#721c24';
+                statusDiv.innerHTML = `❌ Error loading data: ${error.message}`;
                 
                 displayCoursesEmpty();
             }
@@ -325,7 +357,7 @@
                     </div>
                     <div class="course-info"><strong>Course:</strong> ${info.course}</div>
                     <div class="course-info"><strong>Professor:</strong> ${info.professor}</div>
-                    <div class="no-data">No check history yet</div>
+                    <div class="no-data">No check history yet. Run the Python script!</div>
                 `;
                 grid.appendChild(card);
             });
@@ -338,7 +370,7 @@
             Object.keys(courses).forEach(number => {
                 const info = courses[number];
                 const checks = history[number] || [];
-                const latest = checks.length > 0 ? checks[checks.length - 1] : null;
+                const latest = checks.length > 0 ? checks[0] : null;
                 
                 let statusClass = 'status-unknown';
                 let statusText = 'Not checked';
@@ -358,6 +390,8 @@
                 
                 let historyHTML = '';
                 if (checks.length > 0) {
+                    // Show only last 20 checks
+                    const recentChecks = checks.slice(0, 20);
                     historyHTML = `
                         <div class="history-section">
                             <div class="history-title">
@@ -365,9 +399,9 @@
                                 <button class="toggle-history" onclick="toggleHistory('${number}')">Show/Hide</button>
                             </div>
                             <div id="history-${number}" class="history-list">
-                                ${checks.slice().reverse().map(check => `
+                                ${recentChecks.map(check => `
                                     <div class="history-item ${check.has_seats ? 'has-seats' : ''}">
-                                        <div class="history-timestamp">🕐 ${check.timestamp}</div>
+                                        <div class="history-timestamp">🕐 ${formatTimestamp(check.timestamp)}</div>
                                         <div><strong>Professor:</strong> ${check.professor}</div>
                                         <div><strong>Time:</strong> ${check.class_time}</div>
                                         <div class="history-seats">
@@ -388,7 +422,7 @@
                     <div class="course-info"><strong>Course:</strong> ${info.course}</div>
                     <div class="course-info"><strong>Professor:</strong> ${info.professor}</div>
                     ${latest ? `
-                        <div class="course-info"><strong>Last checked:</strong> ${latest.timestamp}</div>
+                        <div class="course-info"><strong>Last checked:</strong> ${formatTimestamp(latest.timestamp)}</div>
                         <div class="course-info"><strong>Time:</strong> ${latest.class_time}</div>
                     ` : '<div class="no-data">No check history yet</div>'}
                     ${historyHTML}

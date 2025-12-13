@@ -18,11 +18,3 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 CMD ["python", "getit.py"]
-```
-
-**`.dockerignore`:**
-```
-.env
-__pycache__
-*.pyc
-.git
