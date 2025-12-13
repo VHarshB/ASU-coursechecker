@@ -18,6 +18,32 @@ from datetime import datetime
 
 load_dotenv()
 
+# History file
+HISTORY_FILE = "course_history.json"
+
+def load_history():
+    """Load existing course check history"""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_check_result(course_number, result):
+    """Save check result to history"""
+    history = load_history()
+    
+    if course_number not in history:
+        history[course_number] = []
+    
+    history[course_number].append(result)
+    
+    # Keep only last 50 checks per course
+    if len(history[course_number]) > 50:
+        history[course_number] = history[course_number][-50:]
+    
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(history, f, indent=2)
+
 def send_email(subject, body, to_email):
     try:
         sender_email = "vaishyaharsh2003@gmail.com"
@@ -41,36 +67,12 @@ def send_email(subject, body, to_email):
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
-def send_sms(message, phone_sms_gateway):
-    try:
-        sender_email = "vaishyaharsh2003@gmail.com"
-        sender_password = os.getenv("EMAIL_PASSWORD")
-
-        if sender_password is None:
-            raise ValueError("EMAIL_PASSWORD environment variable is not set.")
-
-        msg = MIMEMultipart()
-        msg["From"] = sender_email
-        msg["To"] = phone_sms_gateway
-        msg["Subject"] = "ASU Course Alert"
-        msg.attach(MIMEText(message, "plain"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-
-        print("✅ SMS sent successfully")
-    except Exception as e:
-        print(f"❌ Failed to send SMS: {e}")
-
 def inspect_html_structure(url, course_number_to_search, max_retries=3):
     driver = None
     for attempt in range(max_retries):
         try:
             print(f"🔍 Checking course {course_number_to_search}... (Attempt {attempt + 1}/{max_retries})")
             
-            # Set up Chrome options
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
@@ -79,56 +81,51 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
             chrome_options.add_argument("--window-size=1920,1080")
             chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
 
-            # Use WebDriverManager to handle the driver
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.set_page_load_timeout(30)
 
-            # Open the URL
             driver.get(url)
 
-            # Wait for the specific div to be present
             WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CLASS_NAME, 'class-results-rows'))
             )
 
-            # Get the page source
             html = driver.page_source
-
-            # Parse the HTML content
             soup = BeautifulSoup(html, 'html.parser')
-
-            # Find all course rows
             course_rows = soup.find_all('div', class_='class-results-cell number')
 
-            # Extract desired information
             for row in course_rows:
-                # Extract course number
                 course_number = row.find('div').get_text(strip=True)
 
-                # Check if this is the course number we are looking for
                 if course_number == course_number_to_search:
-                    # Extract professor's name
                     instructor_cell = row.find_next_sibling('div', class_='instructor')
                     professor = instructor_cell.get_text(strip=True) if instructor_cell else "N/A"
 
-                    # Extract class time
                     days_cell = row.find_next_sibling('div', class_='days')
                     start_time_cell = row.find_next_sibling('div', class_='start')
                     end_time_cell = row.find_next_sibling('div', class_='end')
                     class_time = f"{days_cell.get_text(strip=True)} | {start_time_cell.get_text(strip=True)} - {end_time_cell.get_text(strip=True)}" if days_cell and start_time_cell and end_time_cell else "N/A"
 
-                    # Extract available seats
                     seats_cell = row.find_next_sibling('div', class_='seats')
                     available_seats_text = seats_cell.get_text(strip=True) if seats_cell else "N/A"
 
-                    # Use regex to extract the number of available seats
                     available_seats_match = re.search(r'(\d+)', available_seats_text)
                     available_seats = int(available_seats_match.group(1)) if available_seats_match else 0
 
                     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                    # Print extracted information
+                    # Save to history
+                    result = {
+                        "timestamp": current_time,
+                        "professor": professor,
+                        "class_time": class_time,
+                        "available_seats": available_seats,
+                        "seats_text": available_seats_text,
+                        "has_seats": available_seats > 0
+                    }
+                    save_check_result(course_number_to_search, result)
+
                     print(f"📚 Course Number: {course_number}")
                     print(f"👨‍🏫 Professor: {professor}")
                     print(f"🕐 Class Time: {class_time}")
@@ -139,6 +136,18 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
                     return available_seats > 0
 
             print(f"❌ Course {course_number_to_search} not found")
+            
+            # Save "not found" result
+            result = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "professor": "N/A",
+                "class_time": "N/A",
+                "available_seats": 0,
+                "seats_text": "Course not found",
+                "has_seats": False
+            }
+            save_check_result(course_number_to_search, result)
+            
             return False
 
         except Exception as e:
@@ -148,6 +157,19 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
                 time.sleep(5)
             else:
                 print(f"❌ All retry attempts failed for course {course_number_to_search}")
+                
+                # Save error result
+                result = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "professor": "N/A",
+                    "class_time": "N/A",
+                    "available_seats": 0,
+                    "seats_text": "Check failed",
+                    "has_seats": False,
+                    "error": str(e)
+                }
+                save_check_result(course_number_to_search, result)
+                
                 return False
         finally:
             if driver:
@@ -156,59 +178,24 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
                 except:
                     pass
 
-# Course configuration
 courses_to_check = [
-    # MAT 343 - Stefania Tracogna
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261",
-        "course_number": "17645"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261",
-        "course_number": "22317"
-    },
-    # CSE 355 - Hani Ben Amor
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=355&honors=F&keywords=%20Hani%20Ben%20Amor&promod=F&searchType=all&subject=CSE&term=2261", 
-        "course_number": "15428"
-    },
-    
-    # CSE 330 - Adil Ahmad
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "10948"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "15967"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "15306"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "15968"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "19648"
-    },
-    {
-        "url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261",
-        "course_number": "25871"
-    },
-
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "17645"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "22317"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=355&honors=F&keywords=%20Hani%20Ben%20Amor&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15428"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "10948"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15967"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15306"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15968"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "19648"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "25871"},
 ]
 
 def test_notifications():
-    """Test function to verify email and SMS are working"""
     print("📧 Testing email notification...\n")
     
     test_course_number = "17645"
     test_url = "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261"
     
-    # Send test email
     subject = f"🧪 TEST: Open Seats Available for Course {test_course_number}"
     body = f"This is a TEST notification!\n\n"
     body += f"Open seats are now available for course number {test_course_number}!\n\n"
@@ -223,16 +210,15 @@ def test_notifications():
 if __name__ == "__main__":
     import sys
     
-    # Check if running in test mode
     if len(sys.argv) > 1 and sys.argv[1] == "test":
         test_notifications()
         sys.exit(0)
     
     print("🚀 Starting ASU Course Availability Checker...")
-    print("📊 Monitoring 15 courses every 2 minutes")
+    print("📊 Monitoring courses every 2 minutes")
+    print("📝 Saving results to course_history.json")
     print("Press Ctrl+C to stop\n")
     
-    # Keep track of consecutive errors
     consecutive_errors = 0
     max_consecutive_errors = 5
     
@@ -252,7 +238,6 @@ if __name__ == "__main__":
                         body += f"Click the link above to register immediately."
                         to_email = "hvaishya@asu.edu"
                         
-                        # Send email
                         send_email(subject, body, to_email)
                         
                         print(f"🚨 ALERT: Seats found for course {course['course_number']}!")
@@ -260,7 +245,7 @@ if __name__ == "__main__":
                         print(f"😔 No seats available for course {course['course_number']}")
                     
                     courses_checked += 1
-                    consecutive_errors = 0  # Reset error counter on success
+                    consecutive_errors = 0
                     
                 except Exception as e:
                     courses_with_errors += 1
@@ -271,10 +256,10 @@ if __name__ == "__main__":
             if courses_with_errors > 0:
                 print(f"⚠️ {courses_with_errors} courses had errors")
             
-            print(f"⏱️  Waiting 10 seconds before next check...")
+            print(f"⏱️  Waiting 2 minutes before next check...")
             print("=" * 60 + "\n")
             
-            time.sleep(10)
+            time.sleep(120)
             
         except KeyboardInterrupt:
             print("\n👋 Course checker stopped by user")
