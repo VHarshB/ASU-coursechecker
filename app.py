@@ -46,8 +46,6 @@ def start_monitoring():
 
 # Start monitoring when the app is created
 start_monitoring()
-
-courses_to_check = [
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "17645"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "22317"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=355&honors=F&keywords=%20Hani%20Ben%20Amor&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15428"},
@@ -310,6 +308,9 @@ def monitoring_loop():
             time.sleep(30)
 
     print("👋 Course checker stopped")
+
+# Start monitoring when the app is created
+start_monitoring()
 
 @app.route('/')
 def index():
