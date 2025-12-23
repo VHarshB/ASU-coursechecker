@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: course-monitor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: SUPABASE_URL
+        value: https://dsfovnqwksxlsusrcfil.supabase.co
+      - key: SUPABASE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzZm92bnF3a3N4bHN1c3JjZmlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1Njk4NDQsImV4cCI6MjA4MTE0NTg0NH0.yJ5FwDyjxvweCl9yYaU_jtsEwO9v3NVgrdyhdgQ_YD8
+      - key: EMAIL_USER
+        value: vaishyaharsh2003@gmail.com
+      - key: EMAIL_PASSWORD
+        sync: false  # Set this in Render dashboard
+      - key: NOTIFICATION_EMAIL
+        value: hvaishya@asu.edu
+    healthCheckPath: /api/status
+    plan: starter
