@@ -44,9 +44,6 @@ def start_monitoring():
         check_thread.start()
         print("🚀 Course monitoring started in background")
 
-# Start monitoring when the app is created
-start_monitoring()
-
 courses_to_check = [
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "17645"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "22317"},
