@@ -35,6 +35,18 @@ monitoring_active = False
 last_check_time = None
 check_thread = None
 
+# Start monitoring automatically when the module is loaded
+def start_monitoring():
+    global monitoring_active, check_thread
+    if not monitoring_active:
+        monitoring_active = True
+        check_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        check_thread.start()
+        print("🚀 Course monitoring started in background")
+
+# Start monitoring when the app is created
+start_monitoring()
+
 courses_to_check = [
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "17645"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "22317"},
@@ -387,9 +399,4 @@ def get_status():
     })
 
 if __name__ == '__main__':
-    # Start monitoring automatically when the app starts
-    monitoring_active = True
-    check_thread = threading.Thread(target=monitoring_loop, daemon=True)
-    check_thread.start()
-
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
