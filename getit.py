@@ -15,6 +15,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from datetime import datetime
 from supabase import create_client, Client
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 load_dotenv()
 
@@ -24,46 +26,52 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Thread-safe lock for email sending
+email_lock = Lock()
+db_lock = Lock()
+
 def save_to_supabase(course_number, result):
     """Save check result to Supabase"""
     try:
-        data = {
-            "course_number": course_number,
-            "timestamp": result["timestamp"],
-            "professor": result["professor"],
-            "class_time": result["class_time"],
-            "available_seats": result["available_seats"],
-            "seats_text": result["seats_text"],
-            "has_seats": result["has_seats"]
-        }
-        
-        response = supabase.table("course_checker").insert(data).execute()
-        print(f"✅ Saved to database: {course_number}")
-        return True
+        with db_lock:
+            data = {
+                "course_number": course_number,
+                "timestamp": result["timestamp"],
+                "professor": result["professor"],
+                "class_time": result["class_time"],
+                "available_seats": result["available_seats"],
+                "seats_text": result["seats_text"],
+                "has_seats": result["has_seats"]
+            }
+            
+            response = supabase.table("course_checker").insert(data).execute()
+            print(f"✅ Saved to database: {course_number}")
+            return True
     except Exception as e:
         print(f"❌ Failed to save to database: {e}")
         return False
 
 def send_email(subject, body, to_email):
     try:
-        sender_email = "vaishyaharsh2003@gmail.com"
-        sender_password = os.getenv("EMAIL_PASSWORD")
+        with email_lock:  # Ensure thread-safe email sending
+            sender_email = "vaishyaharsh2003@gmail.com"
+            sender_password = os.getenv("EMAIL_PASSWORD")
 
-        if sender_password is None:
-            raise ValueError("EMAIL_PASSWORD environment variable is not set.")
+            if sender_password is None:
+                raise ValueError("EMAIL_PASSWORD environment variable is not set.")
 
-        message = MIMEMultipart()
-        message["From"] = sender_email
-        message["To"] = to_email
-        message["Subject"] = subject
-        message.attach(MIMEText(body, "plain"))
+            message = MIMEMultipart()
+            message["From"] = sender_email
+            message["To"] = to_email
+            message["Subject"] = subject
+            message.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.send_message(message)
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls()
+                server.login(sender_email, sender_password)
+                server.send_message(message)
 
-        print("✅ Email sent successfully")
+            print(f"✅ Email sent successfully to {to_email}")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
@@ -74,7 +82,7 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
             print(f"🔍 Checking course {course_number_to_search}... (Attempt {attempt + 1}/{max_retries})")
             
             chrome_options = Options()
-            chrome_options.add_argument("--headless=new")  # Use new headless mode
+            chrome_options.add_argument("--headless=new")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
@@ -84,42 +92,33 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
             chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            # Suppress logging
             chrome_options.add_argument("--log-level=3")
             chrome_options.add_argument("--silent")
 
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.set_page_load_timeout(45)  # Increased timeout
+            driver.set_page_load_timeout(20)
 
             driver.get(url)
+            time.sleep(1)
             
-            # Wait longer and try multiple selectors
-            time.sleep(3)  # Give page time to render
-            
-            # Try waiting for different elements
             try:
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.CLASS_NAME, 'class-results-rows'))
                 )
             except:
-                # Try alternative selector
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[class*="class-results"]'))
                 )
             
-            # Additional wait for dynamic content
             time.sleep(2)
 
             html = driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
             
-            # Try multiple ways to find course rows
             course_rows = soup.find_all('div', class_='class-results-cell number')
             
             if not course_rows:
-                # Try alternative selector
                 course_rows = soup.find_all('div', class_=lambda x: x and 'number' in x)
             
             if not course_rows:
@@ -206,9 +205,65 @@ def inspect_html_structure(url, course_number_to_search, max_retries=3):
             if driver:
                 try:
                     driver.quit()
-                    time.sleep(1)  # Give time to clean up
+                    time.sleep(1)
                 except:
                     pass
+
+def check_single_course(course):
+    """Check a single course - designed to run in thread"""
+    try:
+        has_seats = inspect_html_structure(course["url"], course["course_number"])
+        
+        if has_seats:
+            subject = f"🎉 Open Seats Available for Course {course['course_number']}"
+            body = f"Open seats are now available for course number {course['course_number']}!\n\n"
+            body += f"Course URL: {course['url']}\n\n"
+            body += f"Click the link above to register immediately."
+            to_emails = ["hvaishya@asu.edu", "sgill25@asu.edu"]
+            
+            for to_email in to_emails:
+                send_email(subject, body, to_email)
+            
+            print(f"🚨 ALERT: Seats found for course {course['course_number']}!")
+            return {"course": course['course_number'], "status": "seats_found", "error": None}
+        else:
+            print(f"😔 No seats available for course {course['course_number']}")
+            return {"course": course['course_number'], "status": "no_seats", "error": None}
+    
+    except Exception as e:
+        print(f"⚠️ Error checking course {course['course_number']}: {str(e)}")
+        return {"course": course['course_number'], "status": "error", "error": str(e)}
+
+def check_all_courses_concurrently(courses, max_workers=5):
+    """Check all courses concurrently using ThreadPoolExecutor"""
+    print(f"🚀 Starting concurrent check of {len(courses)} courses with {max_workers} workers...")
+    
+    results = {
+        "checked": 0,
+        "seats_found": 0,
+        "errors": 0,
+        "no_seats": 0
+    }
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_course = {executor.submit(check_single_course, course): course for course in courses}
+        
+        # Process completed tasks as they finish
+        for future in as_completed(future_to_course):
+            result = future.result()
+            results["checked"] += 1
+            
+            if result["status"] == "seats_found":
+                results["seats_found"] += 1
+            elif result["status"] == "error":
+                results["errors"] += 1
+            else:
+                results["no_seats"] += 1
+            
+            print(f"📊 Progress: {results['checked']}/{len(courses)} courses checked")
+    
+    return results
 
 courses_to_check = [
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=343&honors=F&keywords=Stefania%20Tracogna&promod=F&searchType=all&subject=MAT&term=2261", "course_number": "17645"},
@@ -220,6 +275,7 @@ courses_to_check = [
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "15968"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "19648"},
     {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=C&catalogNbr=330&honors=F&keywords=Adil%20Ahmad&promod=F&searchType=all&subject=CSE&term=2261", "course_number": "25871"},
+    {"url": "https://catalog.apps.asu.edu/catalog/classes/classlist?campusOrOnlineSelection=A&catalogNbr=212&honors=F&keywords=29662&promod=F&searchType=all&subject=ECN&term=2261", "course_number": "29662"},
 ]
 
 def test_notifications():
@@ -233,11 +289,12 @@ def test_notifications():
     body += f"Open seats are now available for course number {test_course_number}!\n\n"
     body += f"Course URL: {test_url}\n\n"
     body += f"Click the link above to register immediately."
-    to_email = "hvaishya@asu.edu"
-    send_email(subject, body, to_email)
+    to_emails = ["hvaishya@asu.edu", "sgill25@asu.edu"]
+    for to_email in to_emails:
+        send_email(subject, body, to_email)
     
     print("\n✅ Test email sent! Check your inbox.")
-    print("📧 Email sent to: hvaishya@asu.edu")
+    print("📧 Email sent to: hvaishya@asu.edu, sgill25@asu.edu")
 
 if __name__ == "__main__":
     import sys
@@ -246,9 +303,10 @@ if __name__ == "__main__":
         test_notifications()
         sys.exit(0)
     
-    print("🚀 Starting ASU Course Availability Checker...")
-    print("📊 Monitoring courses every 2 minutes")
+    print("🚀 Starting ASU Course Availability Checker (CONCURRENT MODE)...")
+    print("📊 Monitoring courses every 30 seconds")
     print("☁️  Saving results to Supabase cloud database")
+    print("⚡ Using multi-threading for faster checks")
     print("Press Ctrl+C to stop\n")
     
     consecutive_errors = 0
@@ -256,45 +314,23 @@ if __name__ == "__main__":
     
     while True:
         try:
-            print(f"🔄 Checking all courses... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            start_time = time.time()
+            print(f"🔄 Checking all courses concurrently... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
-            courses_checked = 0
-            courses_with_errors = 0
+            # Check all courses concurrently (adjust max_workers based on your system)
+            results = check_all_courses_concurrently(courses_to_check, max_workers=5)
             
-            for course in courses_to_check:
-                try:
-                    if inspect_html_structure(course["url"], course["course_number"]):
-                        subject = f"🎉 Open Seats Available for Course {course['course_number']}"
-                        body = f"Open seats are now available for course number {course['course_number']}!\n\n"
-                        body += f"Course URL: {course['url']}\n\n"
-                        body += f"Click the link above to register immediately."
-                        to_email = "hvaishya@asu.edu"
-                        
-                        send_email(subject, body, to_email)
-                        
-                        print(f"🚨 ALERT: Seats found for course {course['course_number']}!")
-                    else:
-                        print(f"😔 No seats available for course {course['course_number']}")
-                    
-                    courses_checked += 1
-                    consecutive_errors = 0
-                    
-                    # Add delay between courses to avoid rate limiting
-                    time.sleep(5)
-                    
-                except Exception as e:
-                    courses_with_errors += 1
-                    print(f"⚠️ Error checking course {course['course_number']}: {str(e)}")
-                    continue
+            elapsed_time = time.time() - start_time
             
-            print(f"\n✅ Checked {courses_checked}/{len(courses_to_check)} courses successfully")
-            if courses_with_errors > 0:
-                print(f"⚠️ {courses_with_errors} courses had errors")
+            print(f"\n✅ Completed in {elapsed_time:.2f} seconds")
+            print(f"📊 Summary: {results['checked']} checked | {results['seats_found']} with seats | {results['no_seats']} no seats | {results['errors']} errors")
             
-            print(f"⏱️  Waiting 2 minutes before next check...")
+            consecutive_errors = 0
+            
+            print(f"⏱️  Waiting 30 seconds before next check...")
             print("=" * 60 + "\n")
             
-            time.sleep(120)
+            time.sleep(30)
             
         except KeyboardInterrupt:
             print("\n👋 Course checker stopped by user")
@@ -311,4 +347,4 @@ if __name__ == "__main__":
                 break
             
             print(f"⏳ Waiting 30 seconds before retry...")
-            time.sleep(30)
+            time.sleep(5)
